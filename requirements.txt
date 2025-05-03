@@ -3,4 +3,4 @@ openai
 faiss-cpu
 pypdf
 streamlit
-pinecone-client
+pinecone
