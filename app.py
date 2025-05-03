@@ -14,6 +14,9 @@ PINECONE_CLOUD = "aws"
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
+# Initialize Pinecone
+pc = Pinecone(api_key=PINECONE_API_KEY)
+
 # Create index if it doesn't exist
 if PINECONE_INDEX not in pc.list_indexes().names():
     pc.create_index(
@@ -21,10 +24,11 @@ if PINECONE_INDEX not in pc.list_indexes().names():
         dimension=1536,
         metric="cosine",
         spec=ServerlessSpec(
-            cloud=PINECONE_CLOUD,
-            region=PINECONE_REGION
+            cloud='gcp',         
+            region='gcp-starter' 
         )
     )
+
 
 # Connect to the index
 index = pc.Index(PINECONE_INDEX)
