@@ -1,70 +1,62 @@
 import os
 import faiss
-import openai
-import pinecone
 import numpy as np
-from langchain.document_loaders import PyPDFLoader
-from langchain.embeddings import OpenAIEmbeddings
 import streamlit as st
-import toml
+import pinecone
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_openai import OpenAIEmbeddings
 
-# Load API Keys from apikey.toml
-config = toml.load("apikey.toml")
-openai.api_key = config["openai"]["api_key"]
-pinecone.init(api_key=config["pinecone"]["api_key"], environment=config["pinecone"]["environment"])
+# ✅ Load API Keys from secrets.toml
+openai_api_key = st.secrets["OPENAI_API_KEY"]
+pinecone_api_key = st.secrets["PINECONE_API_KEY"]
+pinecone_env = st.secrets["PINECONE_ENV"]
+
+pinecone.init(api_key=pinecone_api_key, environment=pinecone_env)
 
 # Step 1: Load PDF and Extract Text
-def load_pdf(pdf_path):
-    loader = PyPDFLoader(pdf_path)
+def load_pdf(pdf_file):
+    loader = PyPDFLoader(pdf_file.name)
     documents = loader.load()
     return documents
 
-# Step 2: Generate Embeddings using OpenAI API
+# Step 2: Generate Embeddings using OpenAI
 def generate_embeddings(documents):
-    embeddings = OpenAIEmbeddings()
-    document_embeddings = [embeddings.embed_document(doc) for doc in documents]
-    return document_embeddings
+    embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+    texts = [doc.page_content for doc in documents]
+    return embeddings.embed_documents(texts)
 
 # Step 3: Store Embeddings in FAISS
-def store_embeddings_faiss(embeddings):
-    embedding_vectors = np.array(embeddings)
-    dimension = embedding_vectors.shape[1]  # Embedding size
+def store_embeddings_faiss(embedding_vectors):
+    embedding_vectors = np.array(embedding_vectors).astype("float32")
+    dimension = embedding_vectors.shape[1]
     index = faiss.IndexFlatL2(dimension)
     index.add(embedding_vectors)
     return index
 
-# Step 4: Store Embeddings in Pinecone (Optional, can be switched from FAISS)
-def store_embeddings_pinecone(embeddings, index_name="pdf-search-index"):
-    index = pinecone.Index(index_name)
-    index.upsert(vectors=embeddings)
-    return index
+# Step 4: Search
+def search(query, faiss_index, embed_model, top_k=5):
+    query_embedding = np.array(embed_model.embed_query(query)).astype("float32").reshape(1, -1)
+    distances, indices = faiss_index.search(query_embedding, top_k)
+    return indices
 
-# Step 5: Search Function (Querying the embeddings)
-def search(query, index, top_k=5):
-    query_embedding = generate_embeddings([query])  # Generate query embedding
-    distances, indices = index.search(query_embedding, top_k)
-    return indices  # Return top-k most relevant documents
-
-# Step 6: Streamlit Interface
+# Streamlit UI
 def main():
-    st.title("AI-Powered PDF Search Assistant")
+    st.title("📄 AI-Powered PDF Search Assistant")
 
-    # File Upload Section
-    uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"])
-    
+    uploaded_file = st.file_uploader("Upload your PDF", type="pdf")
     if uploaded_file is not None:
-        # Load PDF and generate embeddings
-        documents = load_pdf(uploaded_file)
-        embeddings = generate_embeddings(documents)
-        
-        # Store embeddings in FAISS
-        index = store_embeddings_faiss(embeddings)
+        with open("temp.pdf", "wb") as f:
+            f.write(uploaded_file.read())
 
-        # User Input: Ask a question
-        query = st.text_input("Ask a question about the PDF:")
+        documents = load_pdf(open("temp.pdf", "rb"))
+        embeddings = generate_embeddings(documents)
+        index = store_embeddings_faiss(embeddings)
+        embed_model = OpenAIEmbeddings(openai_api_key=openai_api_key)
+
+        query = st.text_input("Ask something about the PDF:")
         if query:
-            result_indices = search(query, index)
-            st.write(f"Top Results: {result_indices}")
+            result_indices = search(query, index, embed_model)
+            st.write(f"Top Match Indices: {result_indices}")
 
 if __name__ == "__main__":
     main()
