@@ -10,7 +10,7 @@ from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings import OpenAIEmbeddings
 
 # Load API keys from apikey.toml
-config = toml.load("apikey.toml")
+config = toml.load("Secrets.toml")
 
 openai.api_key = config["openai"]["api_key"]
 pinecone_api_key = config["pinecone"]["api_key"]
