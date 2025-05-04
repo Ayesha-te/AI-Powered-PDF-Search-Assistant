@@ -1,4 +1,5 @@
 import os
+import tempfile
 import streamlit as st
 from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings import OpenAIEmbeddings
@@ -7,12 +8,16 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.question_answering import load_qa_chain
 from langchain.llms import OpenAI
 
-# Load secrets from Streamlit
+# Load secrets
 config = st.secrets
 
 # Step 1: Load PDF and split into chunks
-def load_pdf(file):
-    loader = PyPDFLoader(file.name)
+def load_pdf(uploaded_file):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        tmp_file_path = tmp_file.name
+
+    loader = PyPDFLoader(tmp_file_path)
     pages = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     documents = text_splitter.split_documents(pages)
@@ -26,7 +31,6 @@ def create_vector_index(documents, openai_key):
 
 # Step 3: Query the vector index
 def query_index(index, query, openai_key):
-    embeddings = OpenAIEmbeddings(openai_api_key=openai_key)
     docs = index.similarity_search(query)
     llm = OpenAI(temperature=0, openai_api_key=openai_key)
     chain = load_qa_chain(llm, chain_type="stuff")
