@@ -1,41 +1,95 @@
-import os
 import tempfile
+
+import faiss
+import numpy as np
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains.question_answering import load_qa_chain
-from langchain_openai import OpenAI, OpenAIEmbeddings
+from openai import OpenAI
+from pypdf import PdfReader
 
-# Load secrets
-config = st.secrets
 
-# Step 1: Load PDF and split into chunks
-def load_pdf(uploaded_file):
+def get_openai_api_key() -> str:
+    if "OPENAI_API_KEY" in st.secrets:
+        return st.secrets["OPENAI_API_KEY"]
+    if "openai_api_key" in st.secrets:
+        return st.secrets["openai_api_key"]
+    if "openai" in st.secrets:
+        openai_section = st.secrets["openai"]
+        if "apikey" in openai_section:
+            return openai_section["apikey"]
+        if "api_key" in openai_section:
+            return openai_section["api_key"]
+
+    st.error(
+        "Missing OpenAI API key in Streamlit secrets. Add one of: "
+        "`OPENAI_API_KEY`, `openai_api_key`, or `[openai] api_key`."
+    )
+    st.stop()
+
+
+def get_client() -> OpenAI:
+    return OpenAI(api_key=get_openai_api_key())
+
+
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> list[str]:
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def load_pdf(uploaded_file) -> list[str]:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_file.write(uploaded_file.read())
         tmp_file_path = tmp_file.name
 
-    loader = PyPDFLoader(tmp_file_path)
-    pages = loader.load()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    documents = text_splitter.split_documents(pages)
-    return documents
+    reader = PdfReader(tmp_file_path)
+    full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    return chunk_text(full_text)
 
-# Step 2: Create FAISS vector index
-def create_vector_index(documents, openai_key):
-    embeddings = OpenAIEmbeddings(openai_api_key=openai_key)
-    index = FAISS.from_documents(documents, embeddings)
+
+def embed_chunks(chunks: list[str]) -> np.ndarray:
+    response = get_client().embeddings.create(model="text-embedding-3-small", input=chunks)
+    vectors = [item.embedding for item in response.data]
+    return np.array(vectors, dtype="float32")
+
+
+def create_vector_index(chunks: list[str]):
+    vectors = embed_chunks(chunks)
+    index = faiss.IndexFlatL2(vectors.shape[1])
+    index.add(vectors)
     return index
 
-# Step 3: Query the vector index
-def query_index(index, query, openai_key):
-    docs = index.similarity_search(query)
-    llm = OpenAI(temperature=0, openai_api_key=openai_key)
-    chain = load_qa_chain(llm, chain_type="stuff")
-    return chain.run(input_documents=docs, question=query)
 
-# Streamlit UI
+def query_index(index, chunks: list[str], query: str) -> str:
+    query_embedding = get_client().embeddings.create(
+        model="text-embedding-3-small",
+        input=[query],
+    )
+    query_vector = np.array([query_embedding.data[0].embedding], dtype="float32")
+    _, indices = index.search(query_vector, k=min(4, len(chunks)))
+    relevant_chunks = [chunks[i] for i in indices[0]]
+    context = "\n\n".join(relevant_chunks)
+
+    response = get_client().chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
+        messages=[
+            {
+                "role": "system",
+                "content": "Answer questions using only the supplied document context. Say when the document does not contain the answer.",
+            },
+            {
+                "role": "user",
+                "content": f"Document context:\n{context}\n\nQuestion: {query}",
+            },
+        ],
+    )
+    return response.choices[0].message.content or ""
+
+
 def main():
     st.set_page_config(page_title="AI PDF Search Assistant", layout="centered")
     st.title("📄 AI-Powered PDF Search Assistant")
@@ -43,16 +97,21 @@ def main():
     uploaded_file = st.file_uploader("Upload your PDF", type="pdf")
     if uploaded_file:
         with st.spinner("Processing PDF..."):
-            documents = load_pdf(uploaded_file)
-            index = create_vector_index(documents, config["openai"]["api_key"])
+            chunks = load_pdf(uploaded_file)
+            if not chunks:
+                st.error("No extractable text was found in that PDF.")
+                st.stop()
+
+            index = create_vector_index(chunks)
             st.success("PDF processed and indexed!")
 
-            query = st.text_input("Ask a question about the document:")
-            if query:
-                with st.spinner("Searching for answer..."):
-                    answer = query_index(index, query, config["openai"]["api_key"])
-                    st.subheader("Answer:")
-                    st.write(answer)
+        query = st.text_input("Ask a question about the document:")
+        if query:
+            with st.spinner("Searching for answer..."):
+                answer = query_index(index, chunks, query)
+                st.subheader("Answer:")
+                st.write(answer)
+
 
 if __name__ == "__main__":
     main()
